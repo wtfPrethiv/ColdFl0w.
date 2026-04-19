@@ -1,0 +1,10 @@
+/bin/
+/dist/
+/data/
+*.db
+*.db-shm
+*.db-wal
+.env
+coverage.out
+*.exe
+config.local.json
