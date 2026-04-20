@@ -184,6 +184,11 @@ func (s *Store) Retry(id string) error {
 	_, err := s.DB.Exec(`UPDATE jobs SET status='queued',attempts=0,due=? WHERE id=? AND status='failed'`, domain.Now(), id)
 	return err
 }
+
+func (s *Store) Defer(j domain.Job, at time.Time) error {
+	_, err := s.DB.Exec(`UPDATE jobs SET status='queued',attempts=MAX(attempts-1,0),due=? WHERE id=?`, at.UTC().Format(time.RFC3339), j.ID)
+	return err
+}
 func (s *Store) Search(q string) ([]string, error) {
 	rows, err := s.DB.Query(`SELECT body FROM search WHERE search MATCH ? LIMIT 20`, q)
 	if err != nil {
