@@ -88,6 +88,7 @@ type Draft struct {
 	MessageID        string            `json:"message_id"`
 	ThreadID         string            `json:"thread_id"`
 	RFCMessageID     string            `json:"rfc_message_id"`
+	InReplyTo        string            `json:"in_reply_to"`
 	CreatedAt        string            `json:"created_at"`
 	SentAt           string            `json:"sent_at"`
 	AttemptedAt      string            `json:"attempted_at"`
