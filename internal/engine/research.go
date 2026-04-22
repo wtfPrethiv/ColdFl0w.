@@ -217,7 +217,7 @@ func (e *Engine) analyze(ctx context.Context, id string) error {
 	e.event("Analyst", "evidence", fmt.Sprintf("Verified %d paper excerpts for %s (%s).", len(p.Points), c.Name, location))
 	return e.queue("compose", p.ID)
 }
-func (e *Engine) compose(ctx context.Context, id string, followup bool) error {
+func (e *Engine) compose(ctx context.Context, id string, followup bool, replace ...bool) error {
 	var p domain.Paper
 	var c domain.Contact
 	var original domain.Draft
@@ -253,6 +253,9 @@ func (e *Engine) compose(ctx context.Context, id string, followup bool) error {
 	}
 	drafts, _ := store.List[domain.Draft](e.Store, "draft")
 	for _, d := range drafts {
+		if followup && d.ContactID == c.ID && d.Followup && (len(replace) == 0 || !replace[0]) {
+			return nil
+		}
 		if d.ContactID == c.ID && d.Followup == followup && d.Status != "skipped" && d.Status != "cancelled" {
 			return nil
 		}
@@ -308,7 +311,7 @@ func (e *Engine) compose(ctx context.Context, id string, followup bool) error {
 	if !check.Supported {
 		d.BlockReason = "Factual review: " + check.Reason
 	}
-	if !p.FullText && campaign.Mode == "automatic" {
+	if check.Supported && !p.FullText && campaign.Mode == "automatic" {
 		d.BlockReason = "Abstract-only evidence requires manual approval"
 	}
 	for _, aid := range d.AttachmentIDs {

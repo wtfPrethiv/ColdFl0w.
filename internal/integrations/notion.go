@@ -91,6 +91,40 @@ func (n *Notion) Fetch(ctx context.Context, id string) (NotionPage, error) {
 	err := n.request(ctx, "GET", "pages/"+id, nil, &p)
 	return p, err
 }
+
+// Changes reads only pages edited since the previous synchronization watermark.
+func (n *Notion) Changes(ctx context.Context, after string) ([]NotionPage, error) {
+	out := []NotionPage{}
+	cursor := ""
+	for {
+		body := map[string]any{"page_size": 100}
+		if after != "" {
+			body["filter"] = map[string]any{"timestamp": "last_edited_time", "last_edited_time": map[string]string{"on_or_after": after}}
+		}
+		if cursor != "" {
+			body["start_cursor"] = cursor
+		}
+		var v struct {
+			Results []NotionPage `json:"results"`
+			More    bool         `json:"has_more"`
+			Cursor  string       `json:"next_cursor"`
+		}
+		if err := n.request(ctx, "POST", "data_sources/"+n.Config.NotionDataSource+"/query", body, &v); err != nil {
+			return nil, err
+		}
+		out = append(out, v.Results...)
+		if !v.More {
+			return out, nil
+		}
+		if len(out) >= 1000 {
+			return nil, errors.New("Notion recovery exceeds 1000 changed pages")
+		}
+		if v.Cursor == "" || v.Cursor == cursor {
+			return nil, errors.New("invalid Notion pagination cursor")
+		}
+		cursor = v.Cursor
+	}
+}
 func (n *Notion) Push(ctx context.Context, c domain.Contact, campaign string, paper domain.Paper, sentAt, repliedAt string) (NotionPage, error) {
 	var p NotionPage
 	props := map[string]any{"Name": map[string]any{"title": rich(c.Name)}, "Coldflow ID": map[string]any{"rich_text": rich(c.ID)}, "University": map[string]any{"rich_text": rich(c.University)}, "Email": map[string]any{"email": c.Email}, "Campaign": map[string]any{"rich_text": rich(campaign)}, "Paper": map[string]any{"rich_text": rich(paper.Title)}, "Status": map[string]any{"select": map[string]string{"name": c.Status}}, "Notes": map[string]any{"rich_text": rich(c.Notes)}}

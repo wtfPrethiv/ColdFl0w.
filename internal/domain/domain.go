@@ -13,7 +13,7 @@ func ID() string {
 	}
 	return hex.EncodeToString(b[:])
 }
-func Now() string { return time.Now().UTC().Format(time.RFC3339) }
+func Now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 type Profile struct {
 	Name       string `json:"name"`
@@ -76,6 +76,7 @@ type Draft struct {
 	CampaignID       string            `json:"campaign_id"`
 	PaperID          string            `json:"paper_id"`
 	Subject          string            `json:"subject"`
+	From             string            `json:"from"`
 	Body             string            `json:"body"`
 	AttachmentIDs    []string          `json:"attachment_ids"`
 	AttachmentHashes map[string]string `json:"attachment_hashes"`

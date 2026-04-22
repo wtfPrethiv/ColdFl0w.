@@ -202,7 +202,7 @@ func (e *Engine) work(ctx context.Context, j domain.Job) error {
 	case "compose":
 		return e.compose(ctx, p.ID, false)
 	case "followup":
-		return e.compose(ctx, p.ID, true)
+		return e.compose(ctx, p.ID, true, strings.HasPrefix(j.Key, "regenerate:"))
 	case "send":
 		return e.send(ctx, p.ID)
 	case "chat":

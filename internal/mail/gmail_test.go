@@ -2,6 +2,7 @@ package mail
 
 import (
 	"coldflow/internal/domain"
+	"encoding/base64"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestMIMEHeadersAndBody(t *testing.T) {
-	d := domain.Draft{Subject: "Research in learning", Body: "Dear Professor,\nA specific finding.", RFCMessageID: "coldflow-test@coldflow.local", InReplyTo: "original@example.org"}
+	d := domain.Draft{From: "student@example.org", Subject: "Research in learning", Body: "Dear Professor,\nA specific finding.", RFCMessageID: "coldflow-test@coldflow.local", InReplyTo: "original@example.org"}
 	c := domain.Contact{Email: "prof@example.edu"}
 	b, err := MIME(d, c, nil)
 	if err != nil {
@@ -39,5 +40,16 @@ func TestMIMEHeadersAndBody(t *testing.T) {
 	d.Subject = "bad\r\nBcc: other@example.org"
 	if _, err = MIME(d, c, nil); err == nil {
 		t.Fatal("header injection accepted")
+	}
+}
+
+func TestStructuredBounceRecipient(t *testing.T) {
+	m := Message{}
+	p := Part{MIMEType: "message/delivery-status"}
+	p.Body.Data = base64.RawURLEncoding.EncodeToString([]byte("Reporting-MTA: dns; mx.example.org\r\n\r\nFinal-Recipient: rfc822; prof@example.edu\r\nAction: failed\r\n"))
+	m.Payload.Parts = []Part{p}
+	recipients := m.BounceRecipients()
+	if len(recipients) != 1 || recipients[0] != "prof@example.edu" {
+		t.Fatal(recipients)
 	}
 }

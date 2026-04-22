@@ -151,7 +151,9 @@ func (s *Store) Enqueue(kind, key string, payload any, due time.Time) error {
 }
 func (s *Store) Claim() (domain.Job, error) {
 	var j domain.Job
-	err := s.DB.QueryRow(`UPDATE jobs SET status='running',attempts=attempts+1,lease=? WHERE id=(SELECT id FROM jobs WHERE (status='queued' AND due<=?) OR (status='running' AND lease<?) ORDER BY CASE WHEN kind IN ('chat','incoming','inbox','notify') THEN 0 ELSE 1 END,due LIMIT 1) RETURNING id,kind,jobkey,payload,attempts,due`, domain.Now(), domain.Now(), time.Now().Add(-10*time.Minute).UTC().Format(time.RFC3339)).Scan(&j.ID, &j.Kind, &j.Key, &j.Payload, &j.Attempts, &j.Due)
+	// Queue timestamps use a fixed precision so lexical ordering is chronological.
+	now := time.Now().UTC().Format(time.RFC3339)
+	err := s.DB.QueryRow(`UPDATE jobs SET status='running',attempts=attempts+1,lease=? WHERE id=(SELECT id FROM jobs WHERE (status='queued' AND due<=?) OR (status='running' AND lease<?) ORDER BY CASE WHEN kind IN ('chat','incoming','inbox','notify') THEN 0 ELSE 1 END,due LIMIT 1) RETURNING id,kind,jobkey,payload,attempts,due`, now, now, time.Now().Add(-10*time.Minute).UTC().Format(time.RFC3339)).Scan(&j.ID, &j.Kind, &j.Key, &j.Payload, &j.Attempts, &j.Due)
 	return j, err
 }
 func (s *Store) Finish(j domain.Job, workErr error) error {

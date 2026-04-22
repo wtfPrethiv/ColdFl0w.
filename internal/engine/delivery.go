@@ -155,6 +155,13 @@ func (e *Engine) send(ctx context.Context, id string) error {
 		attachments = append(attachments, a)
 	}
 	d.RFCMessageID = d.ID + "@coldflow.local"
+	if preparer, ok := e.Mail.(interface {
+		Prepare(context.Context, *domain.Draft) error
+	}); ok {
+		if err = preparer.Prepare(ctx, &d); err != nil {
+			return err
+		}
+	}
 	if _, err = gmail.MIME(d, c, attachments); err != nil {
 		return err
 	}
@@ -304,8 +311,9 @@ func (e *Engine) syncInbox(ctx context.Context) error {
 			continue
 		}
 		var c domain.Contact
+		bounced := false
 		for _, d := range drafts {
-			if d.Status == "sent" && d.ThreadID == m.ThreadID {
+			if d.Status == "sent" && (d.ThreadID == m.ThreadID || (d.RFCMessageID != "" && strings.Contains(m.Header("References")+" "+m.Header("In-Reply-To"), "<"+d.RFCMessageID+">"))) {
 				for _, v := range contacts {
 					if v.ID == d.ContactID {
 						c = v
@@ -327,6 +335,27 @@ func (e *Engine) syncInbox(ctx context.Context) error {
 			}
 		}
 		if c.ID == "" {
+			for _, address := range m.BounceRecipients() {
+				for _, v := range contacts {
+					if strings.EqualFold(v.Email, address) {
+						for _, d := range drafts {
+							if d.Status == "sent" && d.ContactID == v.ID {
+								c = v
+								bounced = true
+								break
+							}
+						}
+					}
+					if c.ID != "" {
+						break
+					}
+				}
+				if c.ID != "" {
+					break
+				}
+			}
+		}
+		if c.ID == "" {
 			continue
 		}
 		// Stop follow-ups before AI classification; incoming content has no action authority.
@@ -337,7 +366,17 @@ func (e *Engine) syncInbox(ctx context.Context) error {
 		if current.Status != "opt-out" && current.Status != "stop" && current.Status != "declined" {
 			current.Status = "replied"
 		}
+		if bounced {
+			current.Status = "bounced"
+			current.NextAction = ""
+			if err = e.Store.Set("suppress:"+strings.ToLower(c.Email), "bounced"); err != nil {
+				return err
+			}
+		}
 		current.UpdatedAt = domain.Now()
+		if current.NextAction == "" && !bounced {
+			current.NextAction = e.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+		}
 		if err = e.Store.Put("contact", current.ID, current); err != nil {
 			return err
 		}
@@ -345,11 +384,19 @@ func (e *Engine) syncInbox(ctx context.Context) error {
 			return err
 		}
 		msg := domain.InboxMessage{ID: m.ID, ThreadID: m.ThreadID, ContactID: c.ID, From: m.Header("From"), Subject: m.Header("Subject"), Text: integrations.CleanText(m.Text()), Classification: "replied", Confidence: 1, At: domain.Now()}
+		if millis, parseErr := strconv.ParseInt(m.InternalDate, 10, 64); parseErr == nil && millis > 0 {
+			msg.At = time.UnixMilli(millis).UTC().Format(time.RFC3339)
+		}
+		if bounced {
+			msg.Classification = "bounced"
+		}
 		if err = e.Store.Put("inbox", msg.ID, msg); err != nil {
 			return err
 		}
-		if err = e.queue("classify", msg.ID); err != nil {
-			return err
+		if !bounced {
+			if err = e.queue("classify", msg.ID); err != nil {
+				return err
+			}
 		}
 		e.alert("New reply from " + c.Name + ": " + msg.Subject)
 	}
@@ -421,6 +468,9 @@ func (e *Engine) classify(ctx context.Context, id string) error {
 		}
 		if v.Classification == "out-of-office" {
 			c.NextAction = time.Now().Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339)
+		}
+		if v.Classification == "declined" || v.Classification == "bounced" || v.Classification == "opt-out" {
+			c.NextAction = ""
 		}
 		c.UpdatedAt = domain.Now()
 		if err = e.Store.Put("contact", c.ID, c); err != nil {
@@ -494,92 +544,6 @@ func (e *Engine) digest(ctx context.Context) error {
 	}
 	e.alert(text)
 	return nil
-}
-func (e *Engine) syncNotion(ctx context.Context) error {
-	all, err := store.List[domain.Contact](e.Store, "contact")
-	if err != nil {
-		return err
-	}
-	for _, c := range all {
-		var page *integrations.NotionPage
-		if c.NotionID != "" {
-			p, err := e.Notion.Fetch(ctx, c.NotionID)
-			if err != nil {
-				_ = e.Store.Set("health:notion", err.Error())
-				return err
-			}
-			page = &p
-		} else {
-			p, err := e.Notion.Find(ctx, c.ID)
-			if err != nil {
-				_ = e.Store.Set("health:notion", err.Error())
-				return err
-			}
-			page = p
-			if page != nil {
-				c.NotionID = page.ID
-			}
-		}
-		if page != nil && page.Edited != c.NotionEdited {
-			localAt, _ := time.Parse(time.RFC3339, c.UpdatedAt)
-			remoteAt, _ := time.Parse(time.RFC3339, page.Edited)
-			syncedAt, _ := time.Parse(time.RFC3339, c.NotionEdited)
-			remoteStatus := page.Status()
-			conflict := localAt.After(syncedAt) && c.NotionEdited != ""
-			if conflict && remoteAt.After(syncedAt) && (remoteStatus != c.Status || page.Text("Notes") != c.Notes || page.Next() != c.NextAction) {
-				e.event("Reporter", "conflict", "Notion and Coldflow both changed "+c.Name+". Local fields retained; stop statuses take priority.")
-			}
-			if (!conflict || stopped(remoteStatus)) && allowedStatus(remoteStatus) {
-				if err = e.UpdateContact(c.ID, remoteStatus, page.Text("Notes"), page.Next()); err != nil {
-					return err
-				}
-				c, _ = store.Get[domain.Contact](e.Store, "contact", c.ID)
-			}
-			c.NotionID = page.ID
-		}
-		campaign, _ := store.Get[domain.Campaign](e.Store, "campaign", c.CampaignID)
-		papers, _ := store.List[domain.Paper](e.Store, "paper")
-		var paper domain.Paper
-		for _, p := range papers {
-			if p.ContactID == c.ID {
-				paper = p
-				break
-			}
-		}
-		drafts, _ := store.List[domain.Draft](e.Store, "draft")
-		sent := ""
-		for _, d := range drafts {
-			if d.ContactID == c.ID && d.Status == "sent" {
-				sent = d.SentAt
-				break
-			}
-		}
-		messages, _ := store.List[domain.InboxMessage](e.Store, "inbox")
-		replied := ""
-		for _, m := range messages {
-			if m.ContactID == c.ID {
-				replied = m.At
-				break
-			}
-		}
-		p, err := e.Notion.Push(ctx, c, campaign.Name, paper, sent, replied)
-		if err != nil {
-			_ = e.Store.Set("health:notion", err.Error())
-			return err
-		}
-		e.gate.Lock()
-		latest, err := store.Get[domain.Contact](e.Store, "contact", c.ID)
-		if err == nil {
-			latest.NotionID = p.ID
-			latest.NotionEdited = p.Edited
-			err = e.Store.Put("contact", latest.ID, latest)
-		}
-		e.gate.Unlock()
-		if err != nil {
-			return err
-		}
-	}
-	return e.Store.Set("health:notion", "connected; "+domain.Now())
 }
 func allowedStatus(s string) bool {
 	switch s {

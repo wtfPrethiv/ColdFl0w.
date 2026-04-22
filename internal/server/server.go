@@ -204,6 +204,18 @@ func (s *Server) action(ctx context.Context, a Action) error {
 			return errors.New("memory must contain 1-4000 bytes")
 		}
 		m.Text = a.Text
+		if a.Agent != "" {
+			valid := a.Agent == "shared"
+			for _, agent := range domain.Agents {
+				if agent.Name == a.Agent {
+					valid = true
+				}
+			}
+			if !valid {
+				return errors.New("unknown memory owner")
+			}
+			m.Agent = a.Agent
+		}
 		m.Source = "explicit user edit"
 		m.At = domain.Now()
 		return e.Store.Put("memory", m.ID, m)

@@ -197,7 +197,7 @@ func (m *Model) submit(d *formData) tea.Cmd {
 		case "memory-new":
 			err = m.Client.Action(server.Action{Kind: "remember", Agent: d.agent, Text: d.body})
 		case "memory-edit":
-			err = m.Client.Action(server.Action{Kind: "edit-memory", ID: d.id, Text: d.body})
+			err = m.Client.Action(server.Action{Kind: "edit-memory", ID: d.id, Text: d.body, Agent: d.agent})
 		case "profile":
 			err = m.Client.Request("PUT", "/api/profile", domain.Profile{Name: d.name, Background: d.body, Interests: d.interests, Goal: d.notes, Signature: d.subject}, nil)
 		case "attachment":

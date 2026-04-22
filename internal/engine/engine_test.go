@@ -33,6 +33,11 @@ type fakeMail struct {
 	sent    int
 }
 
+func (f *fakeMail) Prepare(_ context.Context, d *domain.Draft) error {
+	d.From = "student@example.org"
+	return nil
+}
+
 func (f *fakeMail) Send(context.Context, domain.Draft, domain.Contact, []domain.Attachment) (gmail.Sent, error) {
 	f.sent++
 	return gmail.Sent{ID: "sent", ThreadID: "thread"}, nil
@@ -313,5 +318,35 @@ func TestGlobalCapSpansCampaigns(t *testing.T) {
 	}
 	if f.sent != 0 {
 		t.Fatal("global cap ignored")
+	}
+}
+
+func TestRealDeliveryPathUsesSenderAndSchedulesOneFollowup(t *testing.T) {
+	e := fixture(t)
+	e.Config.Demo = false
+	e.Config.Timezone = "UTC"
+	e.Now = func() time.Time { return time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC) }
+	f := &fakeMail{}
+	e.Mail = f
+	if err := e.Approve("draft-ada", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.send(context.Background(), "draft-ada"); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := store.Get[domain.Draft](e.Store, "draft", "draft-ada")
+	if d.Status != "sent" || d.From != "student@example.org" || f.sent != 1 {
+		t.Fatalf("%+v sends=%d", d, f.sent)
+	}
+	if err := e.send(context.Background(), d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if f.sent != 1 {
+		t.Fatal("same draft sent twice")
+	}
+	followup := domain.Draft{ID: "skipped-followup", ContactID: d.ContactID, Followup: true, Status: "skipped"}
+	e.Store.Put("draft", followup.ID, followup)
+	if err := e.compose(context.Background(), d.ID, true); err != nil {
+		t.Fatal(err)
 	}
 }

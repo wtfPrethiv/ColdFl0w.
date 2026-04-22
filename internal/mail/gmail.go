@@ -80,6 +80,36 @@ func (m Message) Text() string {
 	return s
 }
 
+// BounceRecipients extracts structured DSN recipients, never addresses guessed
+// from free-form incoming text.
+func (m Message) BounceRecipients() []string {
+	var out []string
+	var walk func(Part)
+	walk = func(p Part) {
+		if p.MIMEType == "message/delivery-status" {
+			b, _ := base64.RawURLEncoding.DecodeString(strings.TrimRight(p.Body.Data, "="))
+			for _, line := range strings.Split(string(b), "\n") {
+				k, v, ok := strings.Cut(strings.TrimSpace(line), ":")
+				if !ok || (!strings.EqualFold(k, "Final-Recipient") && !strings.EqualFold(k, "Original-Recipient")) {
+					continue
+				}
+				_, address, ok := strings.Cut(v, ";")
+				if ok {
+					address = strings.TrimSpace(address)
+					if SafeAddress(address) == nil {
+						out = append(out, address)
+					}
+				}
+			}
+		}
+		for _, ch := range p.Parts {
+			walk(ch)
+		}
+	}
+	walk(m.Payload)
+	return out
+}
+
 type Mailer interface {
 	Send(context.Context, domain.Draft, domain.Contact, []domain.Attachment) (Sent, error)
 	Find(context.Context, string) (*Sent, error)
@@ -89,6 +119,7 @@ type Mailer interface {
 type Gmail struct {
 	Config config.Config
 	mu     sync.Mutex
+	sender string
 }
 
 func OAuth(c config.Config, redirect string) *oauth2.Config {
@@ -166,9 +197,33 @@ func (g *Gmail) api(ctx context.Context, method, path string, in, out any) error
 func (g *Gmail) Latest(ctx context.Context) (string, error) {
 	var v struct {
 		HistoryID string `json:"historyId"`
+		Email     string `json:"emailAddress"`
 	}
 	err := g.api(ctx, "GET", "profile", nil, &v)
+	if err == nil {
+		g.mu.Lock()
+		g.sender = v.Email
+		g.mu.Unlock()
+	}
 	return v.HistoryID, err
+}
+func (g *Gmail) Prepare(ctx context.Context, d *domain.Draft) error {
+	g.mu.Lock()
+	from := g.sender
+	g.mu.Unlock()
+	if from == "" {
+		if _, err := g.Latest(ctx); err != nil {
+			return err
+		}
+		g.mu.Lock()
+		from = g.sender
+		g.mu.Unlock()
+	}
+	if err := SafeAddress(from); err != nil {
+		return errors.New("Gmail returned an invalid sender identity")
+	}
+	d.From = from
+	return nil
 }
 func SafeAddress(raw string) error {
 	a, err := stdmail.ParseAddress(raw)
@@ -181,12 +236,15 @@ func MIME(d domain.Draft, c domain.Contact, attachments []domain.Attachment) ([]
 	if err := SafeAddress(c.Email); err != nil {
 		return nil, err
 	}
+	if err := SafeAddress(d.From); err != nil {
+		return nil, errors.New("a verified sender address is required")
+	}
 	if strings.ContainsAny(d.Subject+d.RFCMessageID, "\r\n") {
 		return nil, errors.New("invalid message header")
 	}
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	fmt.Fprintf(&buf, "To: %s\r\nSubject: %s\r\nMessage-ID: <%s>\r\nMIME-Version: 1.0\r\n", c.Email, mime.QEncoding.Encode("utf-8", d.Subject), d.RFCMessageID)
+	fmt.Fprintf(&buf, "From: %s\r\nTo: %s\r\nDate: %s\r\nSubject: %s\r\nMessage-ID: <%s>\r\nMIME-Version: 1.0\r\n", d.From, c.Email, time.Now().Format(time.RFC1123Z), mime.QEncoding.Encode("utf-8", d.Subject), d.RFCMessageID)
 	if d.InReplyTo != "" {
 		if strings.ContainsAny(d.InReplyTo, "\r\n<>") {
 			return nil, errors.New("invalid reference header")
