@@ -75,7 +75,11 @@ func Get[T any](s *Store, kind, id string) (T, error) {
 	return v, err
 }
 func List[T any](s *Store, kind string) ([]T, error) {
-	rows, err := s.DB.Query(`SELECT data FROM records WHERE kind=? ORDER BY updated DESC`, kind)
+	projection := "data"
+	if kind == "paper" {
+		projection = "json_remove(data,'$.text')"
+	}
+	rows, err := s.DB.Query(`SELECT `+projection+` FROM records WHERE kind=? ORDER BY updated DESC`, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +151,7 @@ func (s *Store) Enqueue(kind, key string, payload any, due time.Time) error {
 }
 func (s *Store) Claim() (domain.Job, error) {
 	var j domain.Job
-	err := s.DB.QueryRow(`UPDATE jobs SET status='running',attempts=attempts+1,lease=? WHERE id=(SELECT id FROM jobs WHERE (status='queued' AND due<=?) OR (status='running' AND lease<?) ORDER BY CASE WHEN kind IN ('chat','inbox') THEN 0 ELSE 1 END,due LIMIT 1) RETURNING id,kind,jobkey,payload,attempts,due`, domain.Now(), domain.Now(), time.Now().Add(-10*time.Minute).UTC().Format(time.RFC3339)).Scan(&j.ID, &j.Kind, &j.Key, &j.Payload, &j.Attempts, &j.Due)
+	err := s.DB.QueryRow(`UPDATE jobs SET status='running',attempts=attempts+1,lease=? WHERE id=(SELECT id FROM jobs WHERE (status='queued' AND due<=?) OR (status='running' AND lease<?) ORDER BY CASE WHEN kind IN ('chat','incoming','inbox','notify') THEN 0 ELSE 1 END,due LIMIT 1) RETURNING id,kind,jobkey,payload,attempts,due`, domain.Now(), domain.Now(), time.Now().Add(-10*time.Minute).UTC().Format(time.RFC3339)).Scan(&j.ID, &j.Kind, &j.Key, &j.Payload, &j.Attempts, &j.Due)
 	return j, err
 }
 func (s *Store) Finish(j domain.Job, workErr error) error {
@@ -213,6 +217,9 @@ func (s *Store) Backup(path string) error {
 	return err
 }
 func (s *Store) Prune() error {
-	_, err := s.DB.Exec(`DELETE FROM events WHERE id < (SELECT COALESCE(MAX(id),0)-5000 FROM events); DELETE FROM jobs WHERE status='done' AND due < datetime('now','-14 days');`)
+	_, err := s.DB.Exec(`DELETE FROM events WHERE id < (SELECT COALESCE(MAX(id),0)-5000 FROM events);
+ DELETE FROM jobs WHERE status='done' AND julianday(due) < julianday('now','-14 days');
+ DELETE FROM search WHERE kind='chat' AND id IN (SELECT id FROM records WHERE kind='chat' ORDER BY updated DESC LIMIT -1 OFFSET 1000);
+ DELETE FROM records WHERE kind='chat' AND id IN (SELECT id FROM records WHERE kind='chat' ORDER BY updated DESC LIMIT -1 OFFSET 1000);`)
 	return err
 }

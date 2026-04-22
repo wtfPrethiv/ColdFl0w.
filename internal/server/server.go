@@ -124,6 +124,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	case "PUT /api/campaign":
+		var c domain.Campaign
+		if err = decode(r, &c); err == nil {
+			err = s.Engine.EditCampaign(c)
+		}
 	case "PUT /api/profile":
 		var p domain.Profile
 		if err = decode(r, &p); err == nil {

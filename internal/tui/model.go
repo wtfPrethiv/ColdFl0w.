@@ -53,6 +53,7 @@ type formData struct {
 	next        string
 	agent       string
 	attachments []string
+	campaign    domain.Campaign
 }
 type Model struct {
 	Client         *client.Client
@@ -70,13 +71,17 @@ type Model struct {
 	spring         harmonica.Spring
 	load, velocity float64
 	rendered       string
+	markdown       map[string]string
 }
 
 func New(c *client.Client, reduced bool) *Model {
 	v := viewport.New()
 	v.SetWidth(76)
 	v.SetHeight(16)
-	return &Model{Client: c, width: 80, height: 28, viewport: v, help: help.New(), status: "Connecting to Coldflow...", reduced: reduced, spring: harmonica.NewSpring(0.5, 6, 1)}
+	h := help.New()
+	h.ShortSeparator = " | "
+	h.Ellipsis = "..."
+	return &Model{Client: c, width: 80, height: 28, viewport: v, help: h, status: "Connecting to Coldflow...", reduced: reduced, spring: harmonica.NewSpring(0.5, 6, 1), markdown: map[string]string{}}
 }
 func (m *Model) Init() tea.Cmd { return tea.Batch(m.refresh(), tick()) }
 func tick() tea.Cmd            { return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }) }
@@ -90,6 +95,7 @@ func (m *Model) action(a server.Action) tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = size.Width
+		m.markdown = map[string]string{}
 		m.height = size.Height
 		m.viewport.SetWidth(max(20, m.width-6))
 		m.viewport.SetHeight(max(3, m.height-10))
@@ -377,9 +383,15 @@ func (m *Model) content() string {
 			c := chats[j]
 			rendered := c.Text
 			if c.Role == "assistant" {
-				if r, err := glamour.NewTermRenderer(glamour.WithStyles(styles.ASCIIStyleConfig), glamour.WithWordWrap(max(20, m.width-12))); err == nil {
+				if cached, ok := m.markdown[c.ID]; ok {
+					rendered = cached
+				} else if r, err := glamour.NewTermRenderer(glamour.WithStyles(styles.ASCIIStyleConfig), glamour.WithWordWrap(max(20, m.width-12))); err == nil {
 					if s, err := r.Render(integrations.CleanText(c.Text)); err == nil {
 						rendered = s
+						if len(m.markdown) > 100 {
+							m.markdown = map[string]string{}
+						}
+						m.markdown[c.ID] = s
 					}
 				}
 			}

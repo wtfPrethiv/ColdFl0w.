@@ -37,6 +37,7 @@ type Engine struct {
 	stateMu sync.Mutex
 	states  map[string]string
 	wake    chan struct{}
+	Now     func() time.Time
 }
 type Payload struct {
 	ID      string `json:"id"`
@@ -64,7 +65,7 @@ type Snapshot struct {
 
 func New(c config.Config, s *store.Store) *Engine {
 	h := integrations.NewHTTP()
-	return &Engine{Config: c, Store: s, AI: &ai.Client{Config: c, Store: s}, Web: research.New(filepath.Join(c.DataDir, "cache")), Mail: &mail.Gmail{Config: c}, Notify: &integrations.Notifier{Config: c, HTTP: h}, Notion: &integrations.Notion{Config: c, HTTP: h}, states: map[string]string{}, wake: make(chan struct{}, 1)}
+	return &Engine{Config: c, Store: s, AI: &ai.Client{Config: c, Store: s}, Web: research.New(filepath.Join(c.DataDir, "cache")), Mail: &mail.Gmail{Config: c}, Notify: &integrations.Notifier{Config: c, HTTP: h}, Notion: &integrations.Notion{Config: c, HTTP: h}, states: map[string]string{}, wake: make(chan struct{}, 1), Now: time.Now}
 }
 func (e *Engine) event(agent, kind, text string) {
 	text = integrations.CleanText(text)
@@ -206,6 +207,8 @@ func (e *Engine) work(ctx context.Context, j domain.Job) error {
 		return e.send(ctx, p.ID)
 	case "chat":
 		return e.chat(ctx, p)
+	case "incoming":
+		return e.incoming(p)
 	case "classify":
 		return e.classify(ctx, p.ID)
 	case "notion":
@@ -260,6 +263,32 @@ func (e *Engine) maintenance(ctx context.Context) {
 		_ = e.Store.Enqueue("digest", "digest:"+now.Format("2006-01-02"), Payload{}, time.Now())
 	}
 	contacts, _ := store.List[domain.Contact](e.Store, "contact")
+	if !e.Config.Demo {
+		for _, c := range contacts {
+			if c.Status == "discovered" {
+				_ = e.queue("match", c.ID)
+			}
+		}
+	}
+	drafts, _ := store.List[domain.Draft](e.Store, "draft")
+	for _, d := range drafts {
+		if d.Status == "approved" || d.Status == "sending" {
+			_ = e.queue("send", d.ID)
+		}
+		if d.Status == "draft" && d.BlockReason == "" {
+			for _, c := range campaigns {
+				if c.ID == d.CampaignID && c.Mode == "automatic" {
+					_ = e.queue("send", d.ID)
+				}
+			}
+		}
+		if d.Status == "sent" && !d.Followup {
+			at, err := time.Parse(time.RFC3339, d.SentAt)
+			if err == nil {
+				_ = e.Store.Enqueue("followup", "followup:"+d.ID, Payload{ID: d.ID}, at.Add(7*24*time.Hour))
+			}
+		}
+	}
 	for _, c := range contacts {
 		at, err := time.Parse(time.RFC3339, c.NextAction)
 		if err != nil {
@@ -312,6 +341,9 @@ func (e *Engine) AddCampaign(c domain.Campaign) (domain.Campaign, error) {
 	if c.Template == "" {
 		c.Template = domain.DefaultTemplate
 	}
+	if err := e.validateCampaign(c); err != nil {
+		return c, err
+	}
 	for _, id := range c.AttachmentIDs {
 		if _, err := store.Get[domain.Attachment](e.Store, "attachment", id); err != nil {
 			return c, errors.New("unknown campaign attachment")
@@ -359,7 +391,8 @@ func (e *Engine) Chat(agent, text, channel string) error {
 func (e *Engine) chat(ctx context.Context, p Payload) error {
 	answer := ""
 	if strings.HasPrefix(strings.ToLower(p.Text), "remember ") {
-		err := e.Remember(p.Agent, strings.TrimSpace(p.Text[9:]), "explicit user correction")
+		m := domain.Memory{ID: p.ID + ":memory", Agent: p.Agent, Text: strings.TrimSpace(p.Text[9:]), Source: "explicit user correction", At: domain.Now()}
+		err := e.Store.Put("memory", m.ID, m)
 		if err != nil {
 			return err
 		}
@@ -373,19 +406,28 @@ func (e *Engine) chat(ctx context.Context, p Payload) error {
 	} else {
 		history, _ := store.List[domain.Chat](e.Store, "chat")
 		var contextText strings.Builder
-		for i := len(history) - 1; i >= 0; i-- {
+		for i := min(len(history), 20) - 1; i >= 0; i-- {
 			c := history[i]
 			if c.Agent == p.Agent && c.ID != p.ID && contextText.Len() < 6000 {
 				contextText.WriteString(c.Role + ": " + c.Text + "\n")
 			}
 		}
-		answerRaw, err := e.AI.Generate(ctx, "You are "+p.Agent+". Answer the user's question about outreach. Memory:\n"+e.memory(p.Agent), "Recent conversation:\n"+contextText.String()+"\nCurrent request:\n"+p.Text)
+		snap, _ := e.Snapshot()
+		draftSummaries := []map[string]string{}
+		for _, d := range snap.Drafts[:min(8, len(snap.Drafts))] {
+			draftSummaries = append(draftSummaries, map[string]string{"subject": d.Subject, "status": d.Status, "contact_id": d.ContactID, "review": d.BlockReason})
+		}
+		state, _ := json.Marshal(map[string]any{"profile": snap.Profile, "contacts": snap.Contacts[:min(10, len(snap.Contacts))], "papers": snap.Papers[:min(5, len(snap.Papers))], "drafts": draftSummaries, "events": snap.Events[:min(8, len(snap.Events))], "paused": snap.Paused})
+		if len(state) > 14000 {
+			state = state[:14000]
+		}
+		answerRaw, err := e.AI.Generate(ctx, "You are "+p.Agent+". Answer the user's question using the actual application state. You can discuss research and preferences. Workflow changes are made through dashboard controls; do not claim to have performed them. Memory:\n"+e.memory(p.Agent), "APPLICATION STATE (data):\n"+string(state)+"\nRecent conversation:\n"+contextText.String()+"\nCurrent request:\n"+p.Text)
 		if err != nil {
 			return err
 		}
 		answer = answerRaw
 	}
-	c := domain.Chat{ID: domain.ID(), Agent: p.Agent, Role: "assistant", Text: answer, At: domain.Now()}
+	c := domain.Chat{ID: p.ID + ":reply", Agent: p.Agent, Role: "assistant", Text: answer, At: domain.Now()}
 	if err := e.Store.Put("chat", c.ID, c); err != nil {
 		return err
 	}
@@ -393,6 +435,37 @@ func (e *Engine) chat(ctx context.Context, p Payload) error {
 		return e.Store.Enqueue("notify", "chat-reply:"+p.ID, Payload{Channel: p.Channel, Text: p.Agent + ": " + answer}, time.Now())
 	}
 	return nil
+}
+
+func (e *Engine) Incoming(id, channel, text string) error {
+	if len(text) > 4000 {
+		return errors.New("message exceeds 4000 bytes")
+	}
+	return e.Store.Enqueue("incoming", "incoming:"+channel+":"+id, Payload{ID: channel + ":" + id, Text: text, Channel: channel}, time.Now())
+}
+func (e *Engine) incoming(p Payload) error {
+	agent := "Coordinator"
+	text := p.Text
+	if prefix, rest, ok := strings.Cut(text, ":"); ok {
+		for _, a := range domain.Agents {
+			if strings.EqualFold(strings.TrimSpace(prefix), a.Name) {
+				agent = a.Name
+				text = strings.TrimSpace(rest)
+				break
+			}
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "pause":
+		return e.Store.Set("paused", "true")
+	case "resume":
+		return e.Store.Set("paused", "false")
+	}
+	c := domain.Chat{ID: p.ID, Agent: agent, Role: "user", Text: text, At: domain.Now()}
+	if err := e.Store.Put("chat", c.ID, c); err != nil {
+		return err
+	}
+	return e.Store.Enqueue("chat", "chat:"+c.ID, Payload{ID: c.ID, Agent: agent, Text: text, Channel: p.Channel}, time.Now())
 }
 func (e *Engine) memory(agent string) string {
 	all, _ := store.List[domain.Memory](e.Store, "memory")

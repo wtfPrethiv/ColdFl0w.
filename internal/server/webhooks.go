@@ -13,8 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"coldflow/internal/domain"
 )
 
 func (s *Server) whatsappVerify(w http.ResponseWriter, r *http.Request) {
@@ -68,10 +66,11 @@ func (s *Server) whatsapp(w http.ResponseWriter, r *http.Request) {
 			Changes []struct {
 				Value struct {
 					Messages []struct {
-						ID   string `json:"id"`
-						From string `json:"from"`
-						Type string `json:"type"`
-						Text struct {
+						ID        string `json:"id"`
+						From      string `json:"from"`
+						Timestamp string `json:"timestamp"`
+						Type      string `json:"type"`
+						Text      struct {
 							Body string `json:"body"`
 						} `json:"text"`
 					} `json:"messages"`
@@ -89,7 +88,14 @@ func (s *Server) whatsapp(w http.ResponseWriter, r *http.Request) {
 				if m.From != s.Engine.Config.WhatsAppUser || m.From == "" || m.Type != "text" {
 					continue
 				}
-				_ = s.Engine.Store.Set("whatsapp:last_user", domain.Now())
+				stamp, parseErr := strconv.ParseInt(m.Timestamp, 10, 64)
+				if parseErr == nil {
+					at := time.Unix(stamp, 0)
+					previous, _ := time.Parse(time.RFC3339, s.Engine.Store.Value("whatsapp:last_user"))
+					if at.After(previous) && at.Before(time.Now().Add(time.Minute)) {
+						_ = s.Engine.Store.Set("whatsapp:last_user", at.UTC().Format(time.RFC3339))
+					}
+				}
 				if err = s.Engine.Incoming(m.ID, "whatsapp", m.Text.Body); err != nil {
 					http.Error(w, "unable to queue message", 503)
 					return
@@ -165,23 +171,4 @@ func (s *Server) discord(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	write(w, map[string]any{"type": 4, "data": map[string]any{"content": "Queued. Coldflow will respond in your configured private channel.", "flags": 64}})
-}
-func (s *Server) message(text, channel string) error {
-	agent := "Coordinator"
-	if prefix, rest, ok := strings.Cut(text, ":"); ok {
-		for _, a := range domain.Agents {
-			if strings.EqualFold(strings.TrimSpace(prefix), a.Name) {
-				agent = a.Name
-				text = strings.TrimSpace(rest)
-				break
-			}
-		}
-	}
-	switch strings.ToLower(strings.TrimSpace(text)) {
-	case "pause":
-		return s.Engine.Store.Set("paused", "true")
-	case "resume":
-		return s.Engine.Store.Set("paused", "false")
-	}
-	return s.Engine.Chat(agent, text, channel)
 }

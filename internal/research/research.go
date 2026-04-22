@@ -125,7 +125,7 @@ func (w *Web) request(ctx context.Context, raw string, limit int64) ([]byte, str
 	req.Header.Set("User-Agent", "Coldflow/1.0 (academic research; respects robots.txt)")
 	resp, err := w.Client.Do(req)
 	if err != nil {
-		return nil, "", err
+		return nil, "", errors.New("research source connection failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -251,6 +251,9 @@ func (w *Web) Fetch(ctx context.Context, raw string) (string, error) {
 		}
 		text = out.String()
 	} else {
+		if len(b) > 3<<20 {
+			return "", errors.New("HTML source exceeds 3 MiB parsing limit")
+		}
 		doc, err := html.Parse(strings.NewReader(string(b)))
 		if err != nil {
 			return "", err

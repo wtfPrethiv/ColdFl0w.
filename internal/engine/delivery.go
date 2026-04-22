@@ -86,13 +86,14 @@ func (e *Engine) send(ctx context.Context, id string) error {
 		return e.markSent(d, gmail.Sent{ID: "demo-" + d.ID, ThreadID: "demo-thread-" + d.ContactID})
 	}
 	loc, _ := time.LoadLocation(e.Config.Timezone)
-	now := time.Now().In(loc)
-	if !SendingWindow(now) {
+	now := e.Now().In(loc)
+	if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday || now.Hour() < e.Config.SendStartHour || now.Hour() >= e.Config.SendEndHour {
 		return &Deferred{time.Now().Add(15 * time.Minute)}
 	}
 	all, _ := store.List[domain.Draft](e.Store, "draft")
 	sent := 0
 	follow := 0
+	globalNew, globalFollow := 0, 0
 	var mostRecent time.Time
 	for _, o := range all {
 		if o.Status != "sent" {
@@ -105,6 +106,13 @@ func (e *Engine) send(ctx context.Context, id string) error {
 		if at.After(mostRecent) {
 			mostRecent = at
 		}
+		if at.In(loc).Format("2006-01-02") == now.Format("2006-01-02") {
+			if o.Followup {
+				globalFollow++
+			} else {
+				globalNew++
+			}
+		}
 		if o.CampaignID == campaign.ID && at.In(loc).Format("2006-01-02") == now.Format("2006-01-02") {
 			if o.Followup {
 				follow++
@@ -113,10 +121,10 @@ func (e *Engine) send(ctx context.Context, id string) error {
 			}
 		}
 	}
-	if (!d.Followup && sent >= campaign.DailyLimit) || (d.Followup && follow >= campaign.FollowupLimit) {
+	if (!d.Followup && (sent >= campaign.DailyLimit || globalNew >= e.Config.DailyNewLimit)) || (d.Followup && (follow >= campaign.FollowupLimit || globalFollow >= e.Config.DailyFollowupLimit)) {
 		return &Deferred{time.Now().Add(time.Hour)}
 	}
-	if time.Since(mostRecent) < 5*time.Minute {
+	if now.Sub(mostRecent) < 5*time.Minute {
 		return &Deferred{mostRecent.Add(5 * time.Minute)}
 	}
 	// Sync immediately before delivery; on any inbox failure sending waits.
@@ -151,6 +159,9 @@ func (e *Engine) send(ctx context.Context, id string) error {
 		return err
 	}
 	// Persist intent before crossing the delivery boundary.
+	if e.Store.Value("paused") == "true" {
+		return &Deferred{time.Now().Add(time.Minute)}
+	}
 	d.AttemptedAt = domain.Now()
 	d.Status = "sending"
 	if err = e.Store.Put("draft", d.ID, d); err != nil {
@@ -167,7 +178,7 @@ func (e *Engine) markSent(d domain.Draft, s gmail.Sent) error {
 	d.Status = "sent"
 	d.MessageID = s.ID
 	d.ThreadID = s.ThreadID
-	d.SentAt = domain.Now()
+	d.SentAt = e.Now().UTC().Format(time.RFC3339)
 	d.BlockReason = ""
 	if err := e.Store.Put("draft", d.ID, d); err != nil {
 		return err
@@ -247,7 +258,8 @@ func (e *Engine) inboxLoop(ctx context.Context) {
 }
 func (e *Engine) syncInbox(ctx context.Context) error {
 	cursor := e.Store.Value("gmail:history")
-	if cursor == "" {
+	force := e.Store.Value("gmail:resync") == "true"
+	if cursor == "" && !force {
 		latest, err := e.Mail.Latest(ctx)
 		if err != nil {
 			return err
@@ -257,7 +269,22 @@ func (e *Engine) syncInbox(ctx context.Context) error {
 		}
 		return e.Store.Set("gmail:last_sync", domain.Now())
 	}
-	messages, latest, err := e.Mail.Changes(ctx, cursor)
+	var messages []gmail.Message
+	var latest string
+	var err error
+	if force {
+		if g, ok := e.Mail.(*gmail.Gmail); ok {
+			since, parseErr := time.Parse(time.RFC3339, e.Store.Value("gmail:last_sync"))
+			if parseErr != nil {
+				since = time.Now().Add(-7 * 24 * time.Hour)
+			}
+			messages, latest, err = g.Resync(ctx, since.Add(-time.Hour))
+		} else {
+			return errors.New("resync requires Gmail")
+		}
+	} else {
+		messages, latest, err = e.Mail.Changes(ctx, cursor)
+	}
 	if err != nil && strings.Contains(err.Error(), "HTTP 404") {
 		if g, ok := e.Mail.(*gmail.Gmail); ok {
 			since, parseErr := time.Parse(time.RFC3339, e.Store.Value("gmail:last_sync"))
@@ -328,6 +355,11 @@ func (e *Engine) syncInbox(ctx context.Context) error {
 	}
 	if err = e.Store.Set("gmail:history", latest); err != nil {
 		return err
+	}
+	if force {
+		if err = e.Store.Set("gmail:resync", "false"); err != nil {
+			return err
+		}
 	}
 	return e.Store.Set("gmail:last_sync", domain.Now())
 }
@@ -494,7 +526,7 @@ func (e *Engine) syncNotion(ctx context.Context) error {
 			syncedAt, _ := time.Parse(time.RFC3339, c.NotionEdited)
 			remoteStatus := page.Status()
 			conflict := localAt.After(syncedAt) && c.NotionEdited != ""
-			if conflict && remoteAt.After(syncedAt) && remoteStatus != c.Status {
+			if conflict && remoteAt.After(syncedAt) && (remoteStatus != c.Status || page.Text("Notes") != c.Notes || page.Next() != c.NextAction) {
 				e.event("Reporter", "conflict", "Notion and Coldflow both changed "+c.Name+". Local fields retained; stop statuses take priority.")
 			}
 			if (!conflict || stopped(remoteStatus)) && allowedStatus(remoteStatus) {
@@ -503,6 +535,7 @@ func (e *Engine) syncNotion(ctx context.Context) error {
 				}
 				c, _ = store.Get[domain.Contact](e.Store, "contact", c.ID)
 			}
+			c.NotionID = page.ID
 		}
 		campaign, _ := store.Get[domain.Campaign](e.Store, "campaign", c.CampaignID)
 		papers, _ := store.List[domain.Paper](e.Store, "paper")

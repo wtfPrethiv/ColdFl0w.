@@ -25,7 +25,7 @@ func (e *Engine) discover(ctx context.Context, id string) error {
 		return err
 	}
 	if c.Paused || e.Store.Value("paused") == "true" {
-		return nil
+		return &Deferred{time.Now().Add(time.Minute)}
 	}
 	if e.Config.Demo {
 		return nil
@@ -58,11 +58,16 @@ func (e *Engine) discover(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
-		candidates, err := ai.JSON[[]domain.Contact](raw)
+		candidates, err := ai.JSON[[]struct {
+			Name       string `json:"name"`
+			Email      string `json:"email"`
+			University string `json:"university"`
+		}](raw)
 		if err != nil {
 			return err
 		}
-		for _, v := range candidates {
+		for _, candidate := range candidates {
+			v := domain.Contact{Name: candidate.Name, Email: candidate.Email, University: candidate.University}
 			v.Email = strings.TrimSpace(v.Email)
 			addr, parseErr := mail.ParseAddress(v.Email)
 			if parseErr != nil || addr.Address != v.Email || !strings.Contains(strings.ToLower(page), strings.ToLower(v.Email)) || !strings.Contains(strings.ToLower(page), strings.ToLower(v.Name)) || v.Name == "" || v.University == "" {
@@ -116,8 +121,11 @@ func (e *Engine) match(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if stopped(c.Status) || campaign.Paused {
+	if stopped(c.Status) {
 		return nil
+	}
+	if campaign.Paused {
+		return &Deferred{time.Now().Add(time.Minute)}
 	}
 	papers, err := e.Web.Papers(ctx, c, campaign.Interests)
 	if err != nil {
@@ -277,7 +285,7 @@ func (e *Engine) compose(ctx context.Context, id string, followup bool) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(content.Subject) == "" || strings.TrimSpace(content.Body) == "" || strings.ContainsAny(content.Subject, "\r\n") {
+	if strings.TrimSpace(content.Subject) == "" || strings.TrimSpace(content.Body) == "" || len(content.Body) > 20000 || strings.ContainsAny(content.Subject, "\r\n") {
 		return errors.New("invalid composed email")
 	}
 	verification, err := e.AI.Generate(ctx, "Check whether every factual assertion in EMAIL is supported by FACTS. Return JSON {\"supported\":true,\"reason\":\"...\"}. Reject invented qualifications, exaggerated research findings, and claims of having read full text when only quotations are provided.", "FACTS:\n"+string(contextData)+"\nEMAIL:\n"+content.Subject+"\n"+content.Body)
@@ -429,6 +437,13 @@ func (e *Engine) Regenerate(id, instructions string) error {
 	return e.Store.Enqueue(kind, "regenerate:"+domain.ID(), Payload{ID: key}, time.Now())
 }
 func hashFile(path string) (string, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if st.Size() > 10<<20 {
+		return "", errors.New("attachment too large")
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", err

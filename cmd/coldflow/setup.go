@@ -20,6 +20,7 @@ import (
 	gmail "coldflow/internal/mail"
 	"coldflow/internal/server"
 	"coldflow/internal/store"
+	"coldflow/internal/tui"
 	"golang.org/x/oauth2"
 )
 
@@ -32,7 +33,7 @@ func initialize(dir string, demo, headless bool) error {
 	p := domain.Profile{}
 	if !headless && !demo {
 		form := huh.NewForm(huh.NewGroup(huh.NewInput().Title("Your name").Value(&p.Name), huh.NewText().Title("Your background (facts agents may use)").Value(&p.Background), huh.NewInput().Title("Research interests").Value(&p.Interests), huh.NewText().Title("What research opportunity are you asking for?").Value(&p.Goal), huh.NewText().Title("Email signature").Value(&p.Signature)), huh.NewGroup(huh.NewInput().Title("Timezone").Value(&c.Timezone), huh.NewSelect[string]().Title("AI provider").Options(huh.NewOption("OpenAI", "openai"), huh.NewOption("Anthropic", "anthropic"), huh.NewOption("OpenRouter", "openrouter"), huh.NewOption("Compatible API", "compatible")).Value(&c.AIProvider), huh.NewInput().Title("AI model ID from your provider").Value(&c.AIModel)))
-		if err := form.Run(); err != nil {
+		if err := form.WithTheme(huh.ThemeFunc(tui.ASCIITheme)).Run(); err != nil {
 			return err
 		}
 		if _, err := time.LoadLocation(c.Timezone); err != nil {
@@ -65,7 +66,7 @@ func configure(c config.Config) error {
 	fields := []huh.Field{
 		huh.NewInput().Title("AI provider: openai, anthropic, openrouter, compatible").Value(&c.AIProvider), huh.NewInput().Title("AI model ID").Value(&c.AIModel), huh.NewInput().Title("Compatible API base URL (optional)").Value(&c.AIBaseURL), huh.NewInput().Title("Timezone").Value(&c.Timezone), huh.NewInput().Title("Gmail OAuth desktop client ID").Value(&c.GmailClientID), huh.NewInput().Title("Gmail Pub/Sub topic: projects/PROJECT/topics/TOPIC (optional)").Value(&c.GmailTopic), huh.NewInput().Title("Gmail Pub/Sub subscription: projects/PROJECT/subscriptions/SUB (optional)").Value(&c.GmailSubscription), huh.NewInput().Title("Discord private channel ID (optional)").Value(&c.DiscordChannel), huh.NewInput().Title("Discord allowed user ID").Value(&c.DiscordUser), huh.NewInput().Title("Discord application public key").Value(&c.DiscordPublicKey), huh.NewInput().Title("WhatsApp phone number ID (optional)").Value(&c.WhatsAppPhoneID), huh.NewInput().Title("WhatsApp allowed user number, international digits").Value(&c.WhatsAppUser), huh.NewInput().Title("WhatsApp approved notification template name").Value(&c.WhatsAppTemplate), huh.NewInput().Title("Notion data source ID (optional)").Value(&c.NotionDataSource), huh.NewInput().Title("Optional Wish SSH listen address (blank disables)").Value(&c.WishListen), huh.NewInput().Title("Wish authorized_keys file path").Value(&c.AuthorizedKeys),
 	}
-	if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
+	if err := huh.NewForm(huh.NewGroup(fields...)).WithTheme(huh.ThemeFunc(tui.ASCIITheme)).Run(); err != nil {
 		return err
 	}
 	if _, err := time.LoadLocation(c.Timezone); err != nil {

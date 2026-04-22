@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 	_ "time/tzdata"
 
@@ -172,7 +173,7 @@ func serve(c config.Config, withTUI bool) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- srv.Run(ctx) }()

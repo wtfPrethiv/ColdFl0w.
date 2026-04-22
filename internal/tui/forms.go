@@ -42,11 +42,23 @@ func (m *Model) openForm(kind string) tea.Cmd {
 			return nil
 		}
 		c := m.Snap.Campaigns[m.selected[2]]
+		d.campaign = c
+		d.name = c.Name
+		d.interests = c.Interests
+		d.geography = c.Geography
+		d.exclusions = c.Exclusions
+		d.seeds = strings.Join(c.Seeds, "\n")
+		d.template = c.Template
+		d.attachments = append([]string{}, c.AttachmentIDs...)
 		d.id = c.ID
 		d.mode = c.Mode
 		d.limit = strconv.Itoa(c.DailyLimit)
 		d.status = strconv.FormatBool(c.Paused)
 		fields = []huh.Field{huh.NewSelect[string]().Title("Sending mode for "+c.Name).Options(huh.NewOption("Review drafts", "approval"), huh.NewOption("Automatic", "automatic")).Value(&d.mode), huh.NewSelect[string]().Title("Campaign state").Options(huh.NewOption("Running", "false"), huh.NewOption("Paused", "true")).Value(&d.status), huh.NewInput().Title("Maximum new emails per day").Value(&d.limit)}
+		fields = append(fields, huh.NewInput().Title("Campaign name").Value(&d.name), huh.NewInput().Title("Research interests").Value(&d.interests), huh.NewInput().Title("Geography").Value(&d.geography), huh.NewInput().Title("Exclusions, comma separated").Value(&d.exclusions), huh.NewText().Title("Seed URLs, one per line").Value(&d.seeds), huh.NewText().Title("Email template for future drafts").Value(&d.template))
+		if len(attachmentOptions) > 0 {
+			fields = append(fields, huh.NewMultiSelect[string]().Title("Attachments for future drafts").Options(attachmentOptions...).Value(&d.attachments))
+		}
 	case "draft":
 		if len(m.Snap.Drafts) == 0 {
 			return nil
@@ -121,7 +133,7 @@ func (m *Model) openForm(kind string) tea.Cmd {
 		return nil
 	}
 	m.formData = d
-	m.form = huh.NewForm(huh.NewGroup(fields...)).WithWidth(max(20, m.width-8)).WithHeight(max(8, m.height-8))
+	m.form = huh.NewForm(huh.NewGroup(fields...)).WithTheme(huh.ThemeFunc(ASCIITheme)).WithWidth(max(20, m.width-8)).WithHeight(max(8, m.height-8))
 	return m.form.Init()
 }
 func statusField(value *string) huh.Field {
@@ -157,7 +169,23 @@ func (m *Model) submit(d *formData) tea.Cmd {
 				err = e
 				break
 			}
-			err = m.Client.Action(server.Action{Kind: "campaign", ID: d.id, Mode: d.mode, Paused: d.status == "true", Limit: limit})
+			c := d.campaign
+			c.Name = d.name
+			c.Interests = d.interests
+			c.Geography = d.geography
+			c.Exclusions = d.exclusions
+			c.Template = d.template
+			c.AttachmentIDs = d.attachments
+			c.Seeds = nil
+			for _, s := range strings.Split(d.seeds, "\n") {
+				if s = strings.TrimSpace(s); s != "" {
+					c.Seeds = append(c.Seeds, s)
+				}
+			}
+			c.Mode = d.mode
+			c.Paused = d.status == "true"
+			c.DailyLimit = limit
+			err = m.Client.Request("PUT", "/api/campaign", c, nil)
 		case "draft":
 			err = m.Client.Action(server.Action{Kind: "edit-draft", ID: d.id, Revision: d.revision, Subject: d.subject, Body: d.body, Attachments: d.attachments})
 		case "regenerate":
