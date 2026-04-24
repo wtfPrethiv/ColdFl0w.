@@ -1,0 +1,33 @@
+[Unit]
+Description=Coldflow persistent research outreach agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coldflow
+Group=coldflow
+WorkingDirectory=/var/lib/coldflow
+EnvironmentFile=/etc/coldflow/coldflow.env
+Environment=GOMEMLIMIT=350MiB GOMAXPROCS=1
+ExecStart=/usr/local/bin/coldflow --data /var/lib/coldflow serve
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+StateDirectory=coldflow
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/coldflow
+MemoryHigh=450M
+MemoryMax=650M
+TasksMax=64
+LimitNOFILE=1024
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+# Replace coldflow.example.com with a domain pointing at your VPS.
+coldflow.example.com {
+    @hooks path /webhooks/discord /webhooks/whatsapp
+    handle @hooks {
+        request_body {
+            max_size 1MB
+        }
+        reverse_proxy 127.0.0.1:8765
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
