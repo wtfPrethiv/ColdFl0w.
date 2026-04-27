@@ -4,7 +4,7 @@
 
 Use an Ubuntu/Oracle Linux VM with 1 vCPU and 1 GB RAM, persistent local disk, working DNS, and outbound HTTPS. The instructions below use Ubuntu and systemd. Oracle Cloud's VCN security rules and the guest firewall both need to permit your chosen inbound ports. Leave the local API on `127.0.0.1`.
 
-Build on your laptop/CI with `scripts/build.ps1` or `scripts/build.sh` and copy the matching Linux binary to the VM. Choose `linux-amd64` for an x86 VM or `linux-arm64` for ARM; `uname -m` identifies the architecture. Building Fantasy/SQLite on the 1-GB VM is unnecessarily expensive. No container is required.
+Build on your laptop with `scripts/build.ps1` or `scripts/build.sh` and copy the matching Linux binary to the VM. Choose `linux-amd64` for an x86 VM or `linux-arm64` for ARM; `uname -m` identifies the architecture. Building Fantasy/SQLite on the 1-GB VM is unnecessarily expensive. No container is required.
 
 ```sh
 sudo useradd --system --create-home --home-dir /var/lib/coldflow --shell /usr/sbin/nologin coldflow

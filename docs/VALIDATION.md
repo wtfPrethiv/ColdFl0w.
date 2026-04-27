@@ -20,4 +20,4 @@ Built and checked locally on Windows amd64 with Go 1.27.1. No real mail, Discord
 - Measure peak RSS/CPU on the target 1-vCPU/1-GB Linux VM with bounded real research and attachment workloads. Then run the supplied 24-hour isolated demo soak and test sleep/reconnect/reboot recovery.
 - Native UI/account tests on macOS/Linux/Windows terminal hosts; cross-compilation alone does not establish native runtime behavior on every platform.
 
-The CI workflow repeats tests, race checks, and vet on Linux, Windows, and macOS when the repository is pushed. This workspace has no configured Git remote; CI has not been run remotely.
+Automated GitHub Actions CI has been removed. Run tests, race checks, vet, and release builds locally using the commands in the README.
